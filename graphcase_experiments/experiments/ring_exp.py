@@ -3,6 +3,7 @@ import pickle
 import os
 import networkx as nx
 import pandas as pd
+import matplotlib.pyplot as plt
 from graphcase_experiments.graphs.ring_graph.ring_graph_creator import create_ring
 from graphcase_experiments.graphs.ring_graph.ring_graph_plotter import plot_ring
 from graphcase_experiments.tools.calculate_embed import calculate_graphcase_embedding
@@ -19,7 +20,7 @@ from mlflow.tracking import MlflowClient
 BEST_RUN_ID = '54d3e60cc3fc457c95218c29a561b0d6'
 PATH = 'graphcase_experiments/data/ring/'
 SOURCE_PATH = 'graphcase_experiments/graphs/sampled_ring_graphs/'
-EPOCHS = 200
+EPOCHS = 20
 def search_params(trial):
     return {
         'learning_rate': trial.suggest_float("learning_rate", 1e-6, 1e-2, log=True),
@@ -133,7 +134,7 @@ def classify_svm(tbl):
 
 def ring_exp_all(params):
     mlflow.set_experiment("ring_experiment_all_test")
-    res={}
+    res_df = pd.DataFrame(columns=['fraction','delta','seed','ami','f1_macro', 'f1_micro'])
 
     #load graphCase parameters
     if not params:
@@ -148,25 +149,26 @@ def ring_exp_all(params):
         root_path = os.fsdecode(SOURCE_PATH)
         for file in os.listdir(root_path):
             if file.endswith('.pickle'):
-                factor, delta, seed = decode_name(file)
-                G = nx.read_gpickle(file)
-                if (seed ==1) and (delta==0.3):
-                    res[factor][delta][seed] = proces_graph(graph=G, params=params)
+                fraction, delta, seed = decode_name(file)
+                if (seed =='10') and (delta=='0.3'):
+                    G = nx.read_gpickle(root_path + file)
+                    res_run = {"fraction": fraction, "delta": delta, 'seed': seed, **proces_graph(graph=G, params=params)}
+                    res_df = res_df.append(res_run, ignore_index=True)
         
         #store result for logging
         with open(PATH + 'ring_downstream_results_all.pickle', 'wb') as handle:
-            pickle.dump(res, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            pickle.dump(res_df, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
         #log artifacts
         mlflow.log_artifact(PATH + 'ring_downstream_results_all.pickle')
 
-        return res
+        return res_df
 
 
 def proces_graph(graph, params):
     res = {}
-    embed, tbl = calculate_graphcase_embedding(
-            graph, PATH, params=params, epochs=EPOCHS
+    _, tbl = calculate_graphcase_embedding(
+            graph, PATH, params=params, epochs=EPOCHS, verbose=False
         )
     
     #run clustering
@@ -178,8 +180,8 @@ def proces_graph(graph, params):
     svm_res = classify_svm(tbl)
     res['f1_macro'] = svm_res['f1_macro']
     res['f1_micro'] = svm_res['f1_micro']
-    mlflow.log_metric('svl_f1_macro', res['f1_macro'])
-    mlflow.log_metric('svl_f1_micro', res['f1_micro'])
+    mlflow.log_metric('svm_f1_macro', res['f1_macro'])
+    mlflow.log_metric('svm_f1_micro', res['f1_micro'])
  
     return res
 
@@ -189,11 +191,21 @@ def decode_name(file):
     seed = file.split('seed')[1].split('.')[0]
     return (factor, delta, seed)
 
-def plot_results(res, metric):
-    #check to pd.dataframe(Res) werkt
-    tbl = pd.DataFrame.from_dict(
-        {(i,j): res[i][j] 
-                           for i in res.keys() 
-                           for j in res[i].keys()},
-                       orient='index')
+def plot_results(res):
+    fig, ax = plt.subplots(3,1)
+    metrics = ['ami', 'f1_macro', 'f1_micro']
+    for i, m in enumerate(metrics):
+        ax[i].set_title(m)
+        ax[i].set_xlabel('fraction')
+
+    deltas = res['delta'].unique()
+    groupby_df = res.sort_values('fraction').groupby(['fraction', 'delta']).mean()
+    for d in deltas:
+        serie = groupby_df.loc[groupby_df.index.get_level_values('delta')==d]
+        for i, m in enumerate(metrics):
+            ax[i].plot(list(serie[m]), label=d )
+
+    plt.legend()
+    plt.show()
+ 
     
